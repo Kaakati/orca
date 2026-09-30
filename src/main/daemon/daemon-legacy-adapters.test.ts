@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -113,6 +113,19 @@ describe('createLegacyDaemonAdapters stale-artifact cleanup', () => {
     await expect(run()).resolves.toEqual([])
     expect(existsSync(tokenPath)).toBe(false)
     expect(existsSync(pidPath)).toBe(false)
+  })
+
+  it('leaves a replacement published between the checks and cleanup untouched', async () => {
+    mockKill('ESRCH')
+    const replacementPid = JSON.stringify({ pid: 1, startedAtMs: 2, launchNonce: 'next' })
+    probeSocketConnectMock.mockImplementation(async () => {
+      writeFileSync(pidPath, replacementPid)
+      writeFileSync(tokenPath, 'replacement-secret')
+      return 'missing'
+    })
+    await run()
+    expect(readFileSync(pidPath, 'utf8')).toBe(replacementPid)
+    expect(readFileSync(tokenPath, 'utf8')).toBe('replacement-secret')
   })
 
   it('probes a salvaged pid from a torn pid record before deleting anything', async () => {

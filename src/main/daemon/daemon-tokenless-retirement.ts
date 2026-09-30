@@ -2,32 +2,42 @@ import { existsSync } from 'node:fs'
 import { getStrictProcessTableSnapshot } from '../../shared/process-table-snapshot-reader'
 import { readWindowsProcessTableFresh } from '../windows/windows-process-table'
 import { commandLineMatchesDaemon, inspectDaemonProcessIdentity } from './daemon-pid-identity'
+import { getProcessStartedAtMs } from './daemon-process-start-time'
 import { terminateIdentifiedDaemon } from './daemon-stale-kill'
 
 type DaemonProcessCandidate = { pid: number; startedAtMs: number | null }
+type DaemonProcessRow = DaemonProcessCandidate & { command: string }
+
+async function readDaemonProcessRows(): Promise<DaemonProcessRow[]> {
+  if (process.platform === 'win32') {
+    return (await readWindowsProcessTableFresh()).map((row) => ({
+      pid: row.pid,
+      command: row.command,
+      startedAtMs: row.creationTimeMs ?? null
+    }))
+  }
+  return (await getStrictProcessTableSnapshot()).map((row) => ({
+    pid: row.pid,
+    command: row.command,
+    startedAtMs: null
+  }))
+}
 
 async function findDaemonProcesses(
   socketPath: string,
   tokenPath: string
 ): Promise<DaemonProcessCandidate[]> {
-  const rows =
-    process.platform === 'win32'
-      ? (await readWindowsProcessTableFresh()).map((row) => ({
-          pid: row.pid,
-          command: row.command,
-          startedAtMs: row.creationTimeMs ?? null
-        }))
-      : (await getStrictProcessTableSnapshot()).map((row) => ({
-          pid: row.pid,
-          command: row.command,
-          startedAtMs: null
-        }))
-  return rows
+  return (await readDaemonProcessRows())
     .filter(
       (row) =>
         row.pid !== process.pid && commandLineMatchesDaemon(row.command, socketPath, tokenPath)
     )
-    .map(({ pid, startedAtMs }) => ({ pid, startedAtMs }))
+    .map(({ pid, startedAtMs }) => ({
+      pid,
+      // Why: `ps` start markers are opaque; resolving one gives the pre-SIGKILL recheck a real
+      // start time to compare, so a recycled pid is caught rather than matched on argv alone.
+      startedAtMs: startedAtMs ?? getProcessStartedAtMs(pid)
+    }))
 }
 
 /**

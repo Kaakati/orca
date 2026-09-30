@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { endpointIsProvenDead, probeSocketConnect } from './daemon-endpoint-probe'
 import {
   getDaemonHistoryDir as getHistoryDir,
@@ -6,7 +6,13 @@ import {
 } from './daemon-launch-paths'
 import { parseDaemonPidFile, salvagePidFromCorruptDaemonRecord } from './daemon-pid-file-parse'
 import { DaemonPtyAdapter } from './daemon-pty-adapter'
-import { getDaemonPidPath, getDaemonSocketPath, getDaemonTokenPath } from './daemon-spawner'
+import {
+  getDaemonPidPath,
+  getDaemonSocketPath,
+  getDaemonTokenPath,
+  unlinkDaemonPidFileWhen,
+  unlinkOwnedDaemonTokenFile
+} from './daemon-spawner'
 import { retireTokenlessDaemon } from './daemon-tokenless-retirement'
 import { PREVIOUS_DAEMON_PROTOCOL_VERSIONS } from './types'
 
@@ -19,26 +25,37 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code
 }
 
-function readLegacyDaemonPidLiveness(
+/** `content` is the exact record the verdict was drawn from, so cleanup can be fenced to it. */
+type LegacyDaemonPidCheck = { liveness: LegacyDaemonPidLiveness; content: string | null }
+
+function readLegacyDaemonPidCheck(
   runtimeDir: string,
   protocolVersion: number
-): LegacyDaemonPidLiveness {
+): LegacyDaemonPidCheck {
   let content: string
   try {
     content = readFileSync(getDaemonPidPath(runtimeDir, protocolVersion), 'utf8')
   } catch (error) {
-    return hasErrorCode(error, 'ENOENT') ? 'no-record' : 'unknown'
+    return { liveness: hasErrorCode(error, 'ENOENT') ? 'no-record' : 'unknown', content: null }
   }
   const pid = parseDaemonPidFile(content)?.pid ?? salvagePidFromCorruptDaemonRecord(content)
   if (pid === null) {
-    return 'no-record'
+    return { liveness: 'no-record', content }
   }
   try {
     process.kill(pid, 0)
-    return 'alive'
+    return { liveness: 'alive', content }
   } catch (error) {
     // Why: only ESRCH proves absence; Windows reports EPERM for a live process it won't open.
-    return hasErrorCode(error, 'ESRCH') ? 'gone' : 'unknown'
+    return { liveness: hasErrorCode(error, 'ESRCH') ? 'gone' : 'unknown', content }
+  }
+}
+
+function readTokenSnapshot(tokenPath: string): string | null {
+  try {
+    return readFileSync(tokenPath, 'utf8').trim()
+  } catch {
+    return null
   }
 }
 
@@ -68,9 +85,16 @@ async function probeLegacyDaemonSocket(
 // never idles out), so both the pid and the endpoint must prove the daemon is gone.
 async function removeProvablyStaleLegacyArtifacts(
   runtimeDir: string,
-  protocolVersion: number,
-  pidLiveness: LegacyDaemonPidLiveness
+  protocolVersion: number
 ): Promise<void> {
+  // Why snapshot first: a replacement can publish between these checks and the unlinks, and
+  // the claim-then-compare unlinks below only remove the exact records that were judged.
+  const tokenPath = getDaemonTokenPath(runtimeDir, protocolVersion)
+  const token = readTokenSnapshot(tokenPath)
+  const { liveness: pidLiveness, content: pidRecord } = readLegacyDaemonPidCheck(
+    runtimeDir,
+    protocolVersion
+  )
   if (pidLiveness !== 'gone' && pidLiveness !== 'no-record') {
     console.warn(
       `[daemon] Keeping v${protocolVersion} daemon token: endpoint unreachable but pid liveness is ${pidLiveness}`
@@ -84,18 +108,18 @@ async function removeProvablyStaleLegacyArtifacts(
     )
     return
   }
-  const stalePaths = [
-    getDaemonPidPath(runtimeDir, protocolVersion),
-    getDaemonTokenPath(runtimeDir, protocolVersion)
+  const pidPath = getDaemonPidPath(runtimeDir, protocolVersion)
+  const removed = [
+    pidRecord !== null && unlinkDaemonPidFileWhen(pidPath, (content) => content === pidRecord)
+      ? pidPath
+      : null,
+    token !== null && unlinkOwnedDaemonTokenFile(tokenPath, token) ? tokenPath : null
   ]
-  for (const stalePath of stalePaths) {
-    try {
-      unlinkSync(stalePath)
+  for (const stalePath of removed) {
+    if (stalePath) {
       console.warn(
         `[daemon] Removed stale v${protocolVersion} daemon file ${stalePath} (pid ${pidLiveness}, endpoint ${endpoint})`
       )
-    } catch {
-      // Best-effort
     }
   }
 }
@@ -110,9 +134,9 @@ export async function createLegacyDaemonAdapters(
     const socketPath = getDaemonSocketPath(runtimeDir, protocolVersion)
     const tokenPath = getDaemonTokenPath(runtimeDir, protocolVersion)
     const pidLiveness = (): LegacyDaemonPidLiveness =>
-      readLegacyDaemonPidLiveness(runtimeDir, protocolVersion)
+      readLegacyDaemonPidCheck(runtimeDir, protocolVersion).liveness
     if (!(await probeLegacyDaemonSocket(socketPath, pidLiveness))) {
-      await removeProvablyStaleLegacyArtifacts(runtimeDir, protocolVersion, pidLiveness())
+      await removeProvablyStaleLegacyArtifacts(runtimeDir, protocolVersion)
       continue
     }
     if (!existsSync(tokenPath)) {

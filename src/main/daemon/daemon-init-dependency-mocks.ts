@@ -225,7 +225,16 @@ export function createDaemonInitModuleFactories(state: DaemonInitMockState) {
         `/fake/daemon/daemon-v${version ?? PROTOCOL_VERSION}.pid`,
       serializeDaemonPidFile: (obj: unknown) => JSON.stringify(obj),
       replaceDaemonPidFile: replaceDaemonPidFileMock,
-      unlinkOwnedDaemonPidFile: unlinkOwnedDaemonPidFileMock
+      unlinkOwnedDaemonPidFile: unlinkOwnedDaemonPidFileMock,
+      // Why: route fenced unlinks through unlinkSyncMock so suites keep asserting on one seam.
+      unlinkDaemonPidFileWhen: (path: string) => {
+        unlinkSyncMock(path)
+        return true
+      },
+      unlinkOwnedDaemonTokenFile: (path: string) => {
+        unlinkSyncMock(path)
+        return true
+      }
     }),
     daemonPtyAdapter: () => ({
       DaemonPtyAdapter: MockDaemonPtyAdapter

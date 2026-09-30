@@ -28,6 +28,9 @@ vi.mock('./daemon-pid-identity', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   inspectDaemonProcessIdentity: inspectDaemonProcessIdentityMock
 }))
+vi.mock('./daemon-process-start-time', () => ({
+  getProcessStartedAtMs: () => 7_000
+}))
 vi.mock('./daemon-stale-kill', () => ({
   terminateIdentifiedDaemon: terminateIdentifiedDaemonMock
 }))
@@ -66,7 +69,8 @@ describe('retireTokenlessDaemon', () => {
 
   it('terminates the one process whose command line names this endpoint and token', async () => {
     await expect(retireTokenlessDaemon(SOCKET, TOKEN, 36)).resolves.toBe(true)
-    const expectedStart = process.platform === 'win32' ? 1_000 : null
+    // Why: non-Windows rows carry no ms start time, so it is resolved to keep the recheck meaningful.
+    const expectedStart = process.platform === 'win32' ? 1_000 : 7_000
     expect(terminateIdentifiedDaemonMock).toHaveBeenCalledWith(11_932, expectedStart, SOCKET, TOKEN)
   })
 
