@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { endpointIsProvenDead, probeSocketConnect } from './daemon-endpoint-probe'
 import {
   getDaemonHistoryDir as getHistoryDir,
@@ -13,7 +13,7 @@ import {
   unlinkDaemonPidFileWhen,
   unlinkOwnedDaemonTokenFile
 } from './daemon-spawner'
-import { retireTokenlessDaemon } from './daemon-tokenless-retirement'
+import { daemonTokenIsProvenAbsent, retireTokenlessDaemon } from './daemon-tokenless-retirement'
 import { PREVIOUS_DAEMON_PROTOCOL_VERSIONS } from './types'
 
 const LIVE_DAEMON_PROBE_RETRY_DELAYS_MS = [250, 750]
@@ -139,7 +139,7 @@ export async function createLegacyDaemonAdapters(
       await removeProvablyStaleLegacyArtifacts(runtimeDir, protocolVersion)
       continue
     }
-    if (!existsSync(tokenPath)) {
+    if (daemonTokenIsProvenAbsent(tokenPath)) {
       // Why off the startup path: termination waits seconds, and nothing here depends on it.
       void retireTokenlessDaemon(socketPath, tokenPath, protocolVersion).catch((error) => {
         console.warn(`[daemon] Tokenless v${protocolVersion} daemon retirement failed`, error)

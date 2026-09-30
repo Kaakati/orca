@@ -24,7 +24,8 @@ vi.mock('./daemon-pty-adapter', () => ({
     constructor(readonly options: { protocolVersion: number }) {}
   }
 }))
-vi.mock('./daemon-tokenless-retirement', () => ({
+vi.mock('./daemon-tokenless-retirement', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   retireTokenlessDaemon: retireTokenlessDaemonMock
 }))
 vi.mock('./types', () => ({ PREVIOUS_DAEMON_PROTOCOL_VERSIONS: [36] }))

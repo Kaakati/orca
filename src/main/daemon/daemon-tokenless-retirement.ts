@@ -1,9 +1,19 @@
-import { existsSync } from 'node:fs'
+import { statSync } from 'node:fs'
 import { getStrictProcessTableSnapshot } from '../../shared/process-table-snapshot-reader'
 import { readWindowsProcessTableFresh } from '../windows/windows-process-table'
 import { commandLineMatchesDaemon, inspectDaemonProcessIdentity } from './daemon-pid-identity'
 import { getProcessStartedAtMs } from './daemon-process-start-time'
 import { terminateIdentifiedDaemon } from './daemon-stale-kill'
+
+/** Only ENOENT proves absence; EACCES/EPERM/EBUSY on a present token must never authorize a kill. */
+export function daemonTokenIsProvenAbsent(tokenPath: string): boolean {
+  try {
+    statSync(tokenPath)
+    return false
+  } catch (error) {
+    return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
+  }
+}
 
 type DaemonProcessCandidate = { pid: number; startedAtMs: number | null }
 type DaemonProcessRow = DaemonProcessCandidate & { command: string }
@@ -70,12 +80,13 @@ export async function retireTokenlessDaemon(
     return false
   }
   const [{ pid, startedAtMs }] = candidates
-  // Why re-check: a token published since discovery means the daemon is reachable again.
-  if (existsSync(tokenPath)) {
-    return false
-  }
   if ((await inspectDaemonProcessIdentity(pid, socketPath, tokenPath, startedAtMs)) !== 'match') {
     console.warn(`[daemon] Cannot retire tokenless ${label} daemon ${pid}: identity not proven`)
+    return false
+  }
+  // Why last and synchronous: terminateIdentifiedDaemon signals before its first await, so no
+  // token can be published between this check and SIGTERM.
+  if (!daemonTokenIsProvenAbsent(tokenPath)) {
     return false
   }
   console.warn(`[daemon] Retiring tokenless ${label} daemon ${pid}: its sessions are unreachable`)

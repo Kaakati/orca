@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
-  existsSyncMock,
+  statSyncMock,
   readWindowsProcessTableFreshMock,
   getStrictProcessTableSnapshotMock,
   inspectDaemonProcessIdentityMock,
   terminateIdentifiedDaemonMock
 } = vi.hoisted(() => ({
-  existsSyncMock: vi.fn((_path: string) => false),
+  statSyncMock: vi.fn((_path: string): unknown => {
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+  }),
   readWindowsProcessTableFreshMock: vi.fn(),
   getStrictProcessTableSnapshotMock: vi.fn(),
   inspectDaemonProcessIdentityMock: vi.fn(async () => 'match'),
@@ -16,7 +18,7 @@ const {
 
 vi.mock('node:fs', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  existsSync: existsSyncMock
+  statSync: statSyncMock
 }))
 vi.mock('../windows/windows-process-table', () => ({
   readWindowsProcessTableFresh: readWindowsProcessTableFreshMock
@@ -53,7 +55,9 @@ function mockProcessRows(rows: { pid: number; command: string; creationTimeMs?: 
 describe('retireTokenlessDaemon', () => {
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    existsSyncMock.mockReturnValue(false)
+    statSyncMock.mockReset().mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
     inspectDaemonProcessIdentityMock.mockResolvedValue('match')
     terminateIdentifiedDaemonMock.mockClear()
     mockProcessRows([
@@ -90,7 +94,25 @@ describe('retireTokenlessDaemon', () => {
   })
 
   it('does nothing when the token reappeared, because the daemon is reachable again', async () => {
-    existsSyncMock.mockReturnValue(true)
+    statSyncMock.mockReset().mockReturnValue({})
+    await expect(retireTokenlessDaemon(SOCKET, TOKEN, 36)).resolves.toBe(false)
+    expect(terminateIdentifiedDaemonMock).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when the token cannot be proven absent', async () => {
+    // Why: a permission or sharing error on a present token is not evidence the daemon is unreachable.
+    statSyncMock.mockReset().mockImplementation(() => {
+      throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+    })
+    await expect(retireTokenlessDaemon(SOCKET, TOKEN, 36)).resolves.toBe(false)
+    expect(terminateIdentifiedDaemonMock).not.toHaveBeenCalled()
+  })
+
+  it('re-checks the token after the slow identity inspection, right before signalling', async () => {
+    inspectDaemonProcessIdentityMock.mockImplementationOnce(async () => {
+      statSyncMock.mockReset().mockReturnValue({})
+      return 'match'
+    })
     await expect(retireTokenlessDaemon(SOCKET, TOKEN, 36)).resolves.toBe(false)
     expect(terminateIdentifiedDaemonMock).not.toHaveBeenCalled()
   })
