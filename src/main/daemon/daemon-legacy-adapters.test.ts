@@ -3,10 +3,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { probeDaemonSocketMock, probeSocketConnectMock } = vi.hoisted(() => ({
-  probeDaemonSocketMock: vi.fn<(socketPath: string) => Promise<boolean>>(),
-  probeSocketConnectMock: vi.fn<(socketPath: string) => Promise<string>>()
-}))
+const { probeDaemonSocketMock, probeSocketConnectMock, retireTokenlessDaemonMock } = vi.hoisted(
+  () => ({
+    probeDaemonSocketMock: vi.fn<(socketPath: string) => Promise<boolean>>(),
+    probeSocketConnectMock: vi.fn<(socketPath: string) => Promise<string>>(),
+    retireTokenlessDaemonMock: vi.fn(async () => true)
+  })
+)
 
 vi.mock('./daemon-launch-paths', () => ({
   getDaemonHistoryDir: () => '/fake/history',
@@ -20,6 +23,9 @@ vi.mock('./daemon-pty-adapter', () => ({
   DaemonPtyAdapter: class {
     constructor(readonly options: { protocolVersion: number }) {}
   }
+}))
+vi.mock('./daemon-tokenless-retirement', () => ({
+  retireTokenlessDaemon: retireTokenlessDaemonMock
 }))
 vi.mock('./types', () => ({ PREVIOUS_DAEMON_PROTOCOL_VERSIONS: [36] }))
 
@@ -42,6 +48,7 @@ describe('createLegacyDaemonAdapters stale-artifact cleanup', () => {
     writeFileSync(tokenPath, 'secret')
     probeDaemonSocketMock.mockReset().mockResolvedValue(false)
     probeSocketConnectMock.mockReset().mockResolvedValue('missing')
+    retireTokenlessDaemonMock.mockClear()
   })
 
   afterEach(() => {
@@ -114,5 +121,22 @@ describe('createLegacyDaemonAdapters stale-artifact cleanup', () => {
     await run()
     expect(process.kill).toHaveBeenCalledWith(DAEMON_PID, 0)
     expect(existsSync(tokenPath)).toBe(true)
+  })
+
+  it('retires a daemon that answers but whose token is gone, instead of adopting it', async () => {
+    probeDaemonSocketMock.mockResolvedValue(true)
+    rmSync(tokenPath)
+    await expect(run()).resolves.toEqual([])
+    expect(retireTokenlessDaemonMock).toHaveBeenCalledWith(
+      expect.stringContaining('v36'),
+      tokenPath,
+      36
+    )
+  })
+
+  it('adopts a daemon that answers and still has its token', async () => {
+    probeDaemonSocketMock.mockResolvedValue(true)
+    await expect(run()).resolves.toHaveLength(1)
+    expect(retireTokenlessDaemonMock).not.toHaveBeenCalled()
   })
 })

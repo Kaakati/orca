@@ -1,4 +1,4 @@
-import { readFileSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { endpointIsProvenDead, probeSocketConnect } from './daemon-endpoint-probe'
 import {
   getDaemonHistoryDir as getHistoryDir,
@@ -7,6 +7,7 @@ import {
 import { parseDaemonPidFile, salvagePidFromCorruptDaemonRecord } from './daemon-pid-file-parse'
 import { DaemonPtyAdapter } from './daemon-pty-adapter'
 import { getDaemonPidPath, getDaemonSocketPath, getDaemonTokenPath } from './daemon-spawner'
+import { retireTokenlessDaemon } from './daemon-tokenless-retirement'
 import { PREVIOUS_DAEMON_PROTOCOL_VERSIONS } from './types'
 
 const LIVE_DAEMON_PROBE_RETRY_DELAYS_MS = [250, 750]
@@ -112,6 +113,13 @@ export async function createLegacyDaemonAdapters(
       readLegacyDaemonPidLiveness(runtimeDir, protocolVersion)
     if (!(await probeLegacyDaemonSocket(socketPath, pidLiveness))) {
       await removeProvablyStaleLegacyArtifacts(runtimeDir, protocolVersion, pidLiveness())
+      continue
+    }
+    if (!existsSync(tokenPath)) {
+      // Why off the startup path: termination waits seconds, and nothing here depends on it.
+      void retireTokenlessDaemon(socketPath, tokenPath, protocolVersion).catch((error) => {
+        console.warn(`[daemon] Tokenless v${protocolVersion} daemon retirement failed`, error)
+      })
       continue
     }
     // Keep old-protocol PTYs routed to their original daemon during upgrade; legacy adapters never respawn (new code would recreate stale env semantics).

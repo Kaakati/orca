@@ -165,7 +165,8 @@ export function createDaemonInitModuleFactories(state: DaemonInitMockState) {
   return {
     fs: () => ({
       mkdirSync: vi.fn<(...args: unknown[]) => void>(),
-      existsSync: (p: string) => probeSocketExistsMock(p) || p.includes('.pid'),
+      existsSync: (p: string) =>
+        probeSocketExistsMock(p) || p.includes('.pid') || p.includes('.token'),
       lstatSync: (p: string) => {
         if (!probeSocketExistsMock(p)) {
           throw missingFileError()
